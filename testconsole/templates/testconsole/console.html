@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>MoveUG — API Test Console</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #2a2f3a; --text: #e6e8ec;
+    --muted: #8b93a3; --accent: #3ddc97; --accent2: #ffb454; --danger: #ff5d5d;
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); margin: 0; padding: 24px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  .card h2 { font-size: 14px; margin: 0 0 12px; color: var(--accent); text-transform: uppercase; letter-spacing: .04em; }
+  label { display: block; font-size: 11px; color: var(--muted); margin: 8px 0 3px; }
+  input, select, textarea { width: 100%; background: #0d0f14; border: 1px solid var(--border); color: var(--text);
+    padding: 7px 8px; border-radius: 6px; font-size: 13px; }
+  button { margin-top: 10px; background: var(--accent); color: #06110b; border: none; padding: 8px 12px;
+    border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 13px; }
+  button.secondary { background: #2a2f3a; color: var(--text); }
+  button.danger { background: var(--danger); color: #200; }
+  pre { background: #0a0c10; border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-size: 11px;
+    max-height: 180px; overflow: auto; margin-top: 8px; white-space: pre-wrap; word-break: break-all; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 11px; background: #23283380; }
+  .ok { color: var(--accent); } .warn { color: var(--accent2); } .err { color: var(--danger); }
+  #sessionBar { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px;
+    margin-bottom: 16px; font-size: 12px; display: flex; gap: 18px; flex-wrap: wrap; align-items: center; }
+</style>
+</head>
+<body>
+
+<h1>MoveUG — Django API Test Console</h1>
+<div class="sub">Exercises every endpoint directly, no Flutter needed. Runs same-origin so no CORS setup required here.</div>
+
+<div id="sessionBar">
+  <span>Customer token: <b id="custTokenShow">—</b></span>
+  <span>Driver token: <b id="driverTokenShow">—</b></span>
+  <span>Active token in use: <b id="activeShow">customer</b></span>
+  <button class="secondary" onclick="setActive('customer')" style="margin:0;padding:4px 10px;">Use customer</button>
+  <button class="secondary" onclick="setActive('driver')" style="margin:0;padding:4px 10px;">Use driver</button>
+</div>
+
+<div class="grid">
+
+  <!-- REGISTER / LOGIN -->
+  <div class="card">
+    <h2>1. Register / Login</h2>
+    <label>Role</label>
+    <select id="reg_role"><option value="customer">customer</option><option value="driver">driver</option></select>
+    <div class="row">
+      <div><label>Username</label><input id="reg_username" value="alice"></div>
+      <div><label>Phone</label><input id="reg_phone" value="256700000001"></div>
+    </div>
+    <div class="row">
+      <div><label>Password</label><input id="reg_password" type="password" value="pass1234"></div>
+    </div>
+    <div id="driverFields">
+      <div class="row">
+        <div><label>License #</label><input id="reg_license" value="LIC001"></div>
+        <div><label>Vehicle #</label><input id="reg_vehicle_num" value="UBA111X"></div>
+      </div>
+      <label>Vehicle type</label>
+      <select id="reg_vehicle_type"><option value="boda">boda</option><option value="pickup" selected>pickup</option><option value="lorry">lorry</option></select>
+    </div>
+    <button onclick="register()">Register</button>
+    <button class="secondary" onclick="login()">Login instead</button>
+    <pre id="out_register"></pre>
+  </div>
+
+  <!-- ORGANIZATIONS -->
+  <div class="card">
+    <h2>2. Organization (fleet owner)</h2>
+    <label>Org name</label>
+    <input id="org_name" value="Kampala School Runs Ltd">
+    <button onclick="createOrg()">Create org (as customer)</button>
+    <div class="row">
+      <div><label>Org ID</label><input id="org_id" value=""></div>
+      <div><label>Add driver by phone</label><input id="org_driver_phone" value="256700000002"></div>
+    </div>
+    <button onclick="addDriverToOrg()">Add driver to roster</button>
+    <button class="secondary" onclick="listRoster()">List roster</button>
+    <pre id="out_org"></pre>
+  </div>
+
+  <!-- OPEN MARKETPLACE BOOKING -->
+  <div class="card">
+    <h2>3. Open-marketplace booking</h2>
+    <div class="row">
+      <div><label>Pickup lat/lng</label><input id="b_plat" value="0.3476"><input id="b_plng" value="32.5825" style="margin-top:4px;"></div>
+      <div><label>Dropoff lat/lng</label><input id="b_dlat" value="0.3136"><input id="b_dlng" value="32.5811" style="margin-top:4px;"></div>
+    </div>
+    <label>Vehicle type</label>
+    <select id="b_vehicle"><option value="boda">boda</option><option value="pickup" selected>pickup</option><option value="lorry">lorry</option></select>
+    <label>Move date (ISO, blank = now)</label>
+    <input id="b_movedate" placeholder="2026-08-05T09:00:00Z">
+    <button onclick="createBooking()">Create booking (as customer)</button>
+    <button class="secondary" onclick="listJobs()">List open jobs</button>
+    <pre id="out_booking"></pre>
+  </div>
+
+  <!-- BIDDING -->
+  <div class="card">
+    <h2>4. Bidding &amp; acceptance</h2>
+    <div class="row">
+      <div><label>Booking ID</label><input id="bid_booking_id"></div>
+      <div><label>Bid amount</label><input id="bid_amount" value="25000"></div>
+    </div>
+    <button onclick="placeBid()">Place bid (as driver)</button>
+    <button class="secondary" onclick="listBids()">List bids</button>
+    <div class="row">
+      <div><label>Bid ID to accept</label><input id="accept_bid_id"></div>
+    </div>
+    <button onclick="acceptBid()">Accept bid (as customer)</button>
+    <pre id="out_bid"></pre>
+  </div>
+
+  <!-- ORG SCHEDULING -->
+  <div class="card">
+    <h2>5. Org weekly schedule (mini-bidding)</h2>
+    <label>Org ID</label>
+    <input id="sched_org_id">
+    <div class="row">
+      <div><label>Days of week (comma-sep)</label><input id="sched_days" value="mon,wed,fri"></div>
+      <div><label>Time of day</label><input id="sched_time" value="07:00"></div>
+    </div>
+    <div class="row">
+      <div><label>Start date</label><input id="sched_start" value="2026-08-10"></div>
+      <div><label>Weeks</label><input id="sched_weeks" value="2"></div>
+      <div><label>Drivers needed</label><input id="sched_needed" value="2"></div>
+    </div>
+    <button onclick="createSchedule()">Create weekly schedule (opens roster bidding)</button>
+    <div class="row">
+      <div><label>Booking ID</label><input id="sched_booking_id"></div>
+    </div>
+    <button class="secondary" onclick="listSchedBids()">List bids on this schedule</button>
+    <div class="row">
+      <div><label>Bid ID to accept</label><input id="sched_accept_bid_id"></div>
+    </div>
+    <button onclick="acceptSchedBid()">Accept bid (owner)</button>
+    <pre id="out_sched"></pre>
+  </div>
+
+  <!-- DRIVER-SIDE ORG BIDDING -->
+  <div class="card">
+    <h2>5b. Driver: browse &amp; bid on org schedules</h2>
+    <div class="sub" style="margin-bottom:8px;">Switch active token to "driver" first (top bar).</div>
+    <button onclick="listOpportunities()">List my org opportunities</button>
+    <div class="row">
+      <div><label>Booking ID</label><input id="opp_booking_id"></div>
+      <div><label>Bid amount</label><input id="opp_bid_amount" value="18000"></div>
+    </div>
+    <button onclick="placeOrgBid()">Place bid (as driver)</button>
+    <pre id="out_opp"></pre>
+  </div>
+
+  <!-- OCCURRENCE ASSIGNMENT -->
+  <div class="card">
+    <h2>5c. Assign winning driver to a date</h2>
+    <div class="row">
+      <div><label>Occurrence ID</label><input id="occ_id"></div>
+      <div><label>Driver ID</label><input id="occ_driver_id"></div>
+    </div>
+    <button onclick="assignOccurrence()">Assign driver to occurrence (owner)</button>
+    <button class="secondary" onclick="listOccurrences()">List occurrences for org</button>
+    <pre id="out_assign"></pre>
+  </div>
+
+  <!-- DOUBLE BOOKING TEST -->
+  <div class="card">
+    <h2>6. Double-booking guard test</h2>
+    <div class="sub" style="margin-bottom:8px;">
+      Try assigning the SAME driver to two occurrences whose time windows overlap.
+      Second attempt should come back <span class="err">409</span> with conflict details.
+    </div>
+    <div class="row">
+      <div><label>Occurrence A ID</label><input id="conflict_occ_a"></div>
+      <div><label>Occurrence B ID</label><input id="conflict_occ_b"></div>
+    </div>
+    <div class="row">
+      <div><label>Driver ID</label><input id="conflict_driver_id"></div>
+    </div>
+    <button onclick="testDoubleBooking()">Run conflict test</button>
+    <pre id="out_conflict"></pre>
+  </div>
+
+  <!-- PAYMENTS -->
+  <div class="card">
+    <h2>7. Payments (MoMo, simulate mode)</h2>
+    <div class="row">
+      <div><label>Booking ID</label><input id="pay_booking_id"></div>
+      <div><label>Phone</label><input id="pay_phone" value="256700000001"></div>
+    </div>
+    <button onclick="initiatePayment()">Initiate payment (as customer)</button>
+    <button class="secondary" onclick="checkPayment()">Check status</button>
+    <pre id="out_pay"></pre>
+  </div>
+
+</div>
+
+<script>
+const state = { customerToken: null, driverToken: null, active: 'customer' };
+
+document.getElementById('reg_role').addEventListener('change', (e) => {
+  document.getElementById('driverFields').style.display = e.target.value === 'driver' ? 'block' : 'none';
+});
+
+function setActive(who) {
+  state.active = who;
+  document.getElementById('activeShow').innerText = who;
+}
+
+function authHeaders() {
+  const token = state.active === 'driver' ? state.driverToken : state.customerToken;
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = 'Token ' + token;
+  return headers;
+}
+
+async function call(method, url, body, outEl) {
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: authHeaders(),
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    const el = document.getElementById(outEl);
+    el.innerHTML = `<span class="${res.ok ? 'ok' : 'err'}">HTTP ${res.status}</span>\n` + JSON.stringify(data, null, 2);
+    return { ok: res.ok, status: res.status, data };
+  } catch (e) {
+    document.getElementById(outEl).innerHTML = `<span class="err">${e}</span>`;
+    return { ok: false, error: e };
+  }
+}
+
+async function register() {
+  const role = document.getElementById('reg_role').value;
+  const body = {
+    username: document.getElementById('reg_username').value,
+    phone_number: document.getElementById('reg_phone').value,
+    password: document.getElementById('reg_password').value,
+    role,
+  };
+  if (role === 'driver') {
+    body.license_number = document.getElementById('reg_license').value;
+    body.vehicle_number = document.getElementById('reg_vehicle_num').value;
+    body.vehicle_type = document.getElementById('reg_vehicle_type').value;
+  }
+  const r = await call('POST', '/api/auth/register/', body, 'out_register');
+  if (r.ok) storeToken(role, r.data.token);
+}
+
+async function login() {
+  const role = document.getElementById('reg_role').value;
+  const body = { identifier: document.getElementById('reg_username').value, password: document.getElementById('reg_password').value };
+  const r = await call('POST', '/api/auth/login/', body, 'out_register');
+  if (r.ok) storeToken(role, r.data.token);
+}
+
+function storeToken(role, token) {
+  if (role === 'driver') { state.driverToken = token; document.getElementById('driverTokenShow').innerText = token.slice(0, 10) + '…'; }
+  else { state.customerToken = token; document.getElementById('custTokenShow').innerText = token.slice(0, 10) + '…'; }
+}
+
+async function createOrg() {
+  setActive('customer');
+  const r = await call('POST', '/api/organizations/', { name: document.getElementById('org_name').value }, 'out_org');
+  if (r.ok) document.getElementById('org_id').value = r.data.id;
+}
+async function addDriverToOrg() {
+  const orgId = document.getElementById('org_id').value;
+  await call('POST', `/api/organizations/${orgId}/drivers/`, { phone_number: document.getElementById('org_driver_phone').value }, 'out_org');
+}
+async function listRoster() {
+  const orgId = document.getElementById('org_id').value;
+  await call('GET', `/api/organizations/${orgId}/drivers/`, null, 'out_org');
+}
+
+async function createBooking() {
+  setActive('customer');
+  const body = {
+    pickup_lat: document.getElementById('b_plat').value, pickup_lng: document.getElementById('b_plng').value,
+    dropoff_lat: document.getElementById('b_dlat').value, dropoff_lng: document.getElementById('b_dlng').value,
+    vehicle_type: document.getElementById('b_vehicle').value,
+  };
+  const md = document.getElementById('b_movedate').value;
+  if (md) body.move_date = md;
+  const r = await call('POST', '/api/bookings/create/', body, 'out_booking');
+  if (r.ok) document.getElementById('bid_booking_id').value = r.data.booking_id;
+}
+async function listJobs() { await call('GET', '/api/bookings/jobs/', null, 'out_booking'); }
+
+async function placeBid() {
+  setActive('driver');
+  const bookingId = document.getElementById('bid_booking_id').value;
+  const r = await call('POST', `/api/bookings/${bookingId}/bid/`, { bid_amount: Number(document.getElementById('bid_amount').value) }, 'out_bid');
+  if (r.ok) document.getElementById('accept_bid_id').value = r.data.id;
+}
+async function listBids() {
+  const bookingId = document.getElementById('bid_booking_id').value;
+  await call('GET', `/api/bookings/${bookingId}/bids/`, null, 'out_bid');
+}
+async function acceptBid() {
+  setActive('customer');
+  const bookingId = document.getElementById('bid_booking_id').value;
+  const bidId = document.getElementById('accept_bid_id').value;
+  await call('POST', `/api/bookings/${bookingId}/accept/${bidId}/`, {}, 'out_bid');
+}
+
+async function createSchedule() {
+  setActive('customer');
+  const orgId = document.getElementById('sched_org_id').value;
+  const days = document.getElementById('sched_days').value.split(',').map(s => s.trim()).filter(Boolean);
+  const body = {
+    pickup_lat: document.getElementById('b_plat').value, pickup_lng: document.getElementById('b_plng').value,
+    dropoff_lat: document.getElementById('b_dlat').value, dropoff_lng: document.getElementById('b_dlng').value,
+    vehicle_type: document.getElementById('b_vehicle').value,
+    days_of_week: days,
+    time_of_day: document.getElementById('sched_time').value,
+    start_date: document.getElementById('sched_start').value,
+    weeks: Number(document.getElementById('sched_weeks').value),
+    drivers_needed: Number(document.getElementById('sched_needed').value),
+  };
+  const r = await call('POST', `/api/organizations/${orgId}/schedule/`, body, 'out_sched');
+  if (r.ok) {
+    document.getElementById('sched_booking_id').value = r.data.booking.id;
+    document.getElementById('opp_booking_id').value = r.data.booking.id;
+    if (r.data.occurrences.length) {
+      document.getElementById('occ_id').value = r.data.occurrences[0].id;
+      document.getElementById('conflict_occ_a').value = r.data.occurrences[0].id;
+      if (r.data.occurrences[1]) document.getElementById('conflict_occ_b').value = r.data.occurrences[1].id;
+    }
+  }
+}
+async function listSchedBids() {
+  setActive('customer');
+  const bookingId = document.getElementById('sched_booking_id').value;
+  await call('GET', `/api/organizations/schedule/${bookingId}/bids/`, null, 'out_sched');
+}
+async function acceptSchedBid() {
+  setActive('customer');
+  const bookingId = document.getElementById('sched_booking_id').value;
+  const bidId = document.getElementById('sched_accept_bid_id').value;
+  await call('POST', `/api/organizations/schedule/${bookingId}/bids/${bidId}/accept/`, {}, 'out_sched');
+}
+
+async function listOpportunities() {
+  setActive('driver');
+  await call('GET', '/api/organizations/opportunities/', null, 'out_opp');
+}
+async function placeOrgBid() {
+  setActive('driver');
+  const bookingId = document.getElementById('opp_booking_id').value;
+  await call('POST', `/api/organizations/schedule/${bookingId}/bids/`,
+    { bid_amount: Number(document.getElementById('opp_bid_amount').value) }, 'out_opp');
+}
+
+async function assignOccurrence() {
+  setActive('customer');
+  const occId = document.getElementById('occ_id').value;
+  await call('POST', `/api/organizations/occurrences/${occId}/assign/`, { driver_id: Number(document.getElementById('occ_driver_id').value) }, 'out_assign');
+}
+async function listOccurrences() {
+  setActive('customer');
+  const orgId = document.getElementById('sched_org_id').value;
+  await call('GET', `/api/organizations/${orgId}/occurrences/`, null, 'out_assign');
+}
+
+async function testDoubleBooking() {
+  setActive('customer');
+  const occA = document.getElementById('conflict_occ_a').value;
+  const occB = document.getElementById('conflict_occ_b').value;
+  const driverId = Number(document.getElementById('conflict_driver_id').value);
+  const out = document.getElementById('out_conflict');
+  out.innerHTML = 'Assigning driver to occurrence A...\n';
+  const r1 = await fetch(`/api/organizations/occurrences/${occA}/assign/`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ driver_id: driverId }) });
+  const d1 = await r1.json();
+  out.innerHTML += `A -> HTTP ${r1.status}: ${JSON.stringify(d1)}\n\n`;
+  out.innerHTML += 'Now trying SAME driver on occurrence B (should conflict if times overlap)...\n';
+  const r2 = await fetch(`/api/organizations/occurrences/${occB}/assign/`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ driver_id: driverId }) });
+  const d2 = await r2.json();
+  out.innerHTML += `B -> HTTP ${r2.status}: ${JSON.stringify(d2, null, 2)}\n\n`;
+  out.innerHTML += r2.status === 409
+    ? '<span class="ok">✔ Double-booking correctly blocked.</span>'
+    : '<span class="warn">Not blocked — check whether A/B dates actually overlap in time.</span>';
+}
+
+async function initiatePayment() {
+  setActive('customer');
+  const bookingId = document.getElementById('pay_booking_id').value;
+  await call('POST', `/api/payments/${bookingId}/initiate/`, { phone: document.getElementById('pay_phone').value }, 'out_pay');
+}
+async function checkPayment() {
+  setActive('customer');
+  const bookingId = document.getElementById('pay_booking_id').value;
+  await call('GET', `/api/payments/${bookingId}/status/`, null, 'out_pay');
+}
+</script>
+</body>
+</html>
