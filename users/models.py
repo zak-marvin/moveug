@@ -6,19 +6,12 @@ class User(AbstractUser):
     ROLE_CHOICES = [('customer', 'Customer'), ('driver', 'Driver'), ('org_admin', 'Organization Admin')]
     role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='customer')
     phone_number = models.CharField(max_length=15, unique=True)
+    REQUIRED_FIELDS = ['phone_number']
 
     def __str__(self):
         return f"{self.username} ({self.role})"
 
-class User(AbstractUser):
-    ROLE_CHOICES = [('customer', 'Customer'), ('driver', 'Driver'), ('org_admin', 'Organization Admin')]
-    role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='customer')
-    phone_number = models.CharField(max_length=15, unique=True)
 
-    REQUIRED_FIELDS = ['phone_number']   # <- add this line
-
-    def __str__(self):
-        return f"{self.username} ({self.role})"
 class DriverProfile(models.Model):
     VEHICLE_CHOICES = [('boda', 'Boda Boda'), ('pickup', 'Pickup'), ('lorry', 'Lorry 3 ton')]
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='driver_profile')
