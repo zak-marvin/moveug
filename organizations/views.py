@@ -184,6 +184,19 @@ class OrganizationScheduleListView(APIView):
         return Response(BookingOccurrenceSerializer(occurrences, many=True).data)
 
 
+class OrgScheduleListView(APIView):
+    """List the schedule Bookings themselves for an org (as opposed to their
+    individual date occurrences) -- powers an org-owner's 'your schedules' list."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, organization_id):
+        org = _get_owned_org(request, organization_id)
+        if not org:
+            return Response({"error": "Organization not found or not owned by you."}, status=404)
+        bookings = Booking.objects.filter(organization=org).order_by('-created_at')
+        return Response(BookingSerializer(bookings, many=True).data)
+
+
 class OrgOpportunitiesListView(APIView):
     """Roster drivers browse open (status='bidding') recurring jobs for any
     organization they're an active member of -- shows pickup/dropoff, the weekly
@@ -240,14 +253,53 @@ class OrgBidListCreateView(APIView):
         bid_amount = request.data.get('bid_amount')
         if not bid_amount:
             return Response({"error": "bid_amount is required."}, status=400)
-        if OrganizationBid.objects.filter(booking=booking, driver=request.user).exists():
-            return Response({"error": "You've already placed a bid on this schedule."}, status=400)
+        existing = OrganizationBid.objects.filter(booking=booking, driver=request.user).first()
+        if existing:
+            return Response({
+                "error": "You've already placed a bid on this schedule -- edit it instead.",
+                "bid_id": existing.id,
+            }, status=400)
 
         bid = OrganizationBid.objects.create(
             booking=booking, driver=request.user,
             bid_amount=bid_amount, message=request.data.get('message', ''),
         )
         return Response(OrganizationBidSerializer(bid).data, status=201)
+
+
+class MyOrgBidView(APIView):
+    """Driver's own bid on a specific org schedule -- powers the 'my bid' page
+    (price + pending/accepted/rejected status), same idea as MyBidView in bookings."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, booking_id):
+        if request.user.role != 'driver':
+            return Response({"error": "Only drivers have bids here."}, status=403)
+        bid = get_object_or_404(OrganizationBid, booking_id=booking_id, driver=request.user)
+        return Response(OrganizationBidSerializer(bid).data)
+
+
+class EditOrgBidView(APIView):
+    """Edit the price/message on your own org-schedule bid, while it's still
+    pending and the schedule is still open for bidding."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, booking_id, bid_id):
+        bid = get_object_or_404(OrganizationBid, id=bid_id, booking_id=booking_id)
+        if bid.driver_id != request.user.id:
+            return Response({"error": "This isn't your bid."}, status=403)
+        if bid.status != 'pending':
+            return Response({"error": f"This bid has already been {bid.status} -- it can't be edited anymore."},
+                             status=400)
+        if bid.booking.status != 'bidding':
+            return Response({"error": "This schedule is no longer open for bidding."}, status=400)
+        bid_amount = request.data.get('bid_amount')
+        if bid_amount:
+            bid.bid_amount = bid_amount
+        if 'message' in request.data:
+            bid.message = request.data.get('message', '')
+        bid.save(update_fields=['bid_amount', 'message'])
+        return Response(OrganizationBidSerializer(bid).data)
 
 
 class AcceptOrgBidView(APIView):

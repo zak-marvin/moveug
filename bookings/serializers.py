@@ -33,8 +33,8 @@ class DriverBidSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = DriverBid
-        fields = ['id', 'booking', 'driver', 'driver_username', 'bid_amount', 'message', 'created_at']
-        read_only_fields = ['driver', 'booking']
+        fields = ['id', 'booking', 'driver', 'driver_username', 'bid_amount', 'message', 'status', 'created_at']
+        read_only_fields = ['driver', 'booking', 'status']
 
 
 class ChatMessageSerializer(serializers.ModelSerializer):

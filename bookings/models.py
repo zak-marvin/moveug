@@ -91,14 +91,18 @@ class BookingItem(models.Model):
 
 
 class DriverBid(models.Model):
+    STATUS = [('pending', 'Pending'), ('accepted', 'Accepted'), ('rejected', 'Rejected')]
+
     booking = models.ForeignKey(Booking, on_delete=models.CASCADE, related_name='bids')
     driver = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     bid_amount = models.IntegerField()
     message = models.CharField(max_length=200, blank=True)
+    status = models.CharField(max_length=10, choices=STATUS, default='pending')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ['bid_amount']
+        unique_together = ('booking', 'driver')  # one bid per driver per booking -- edit it, don't duplicate it
 
 
 class ChatMessage(models.Model):
