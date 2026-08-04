@@ -83,3 +83,12 @@ def get_distance_km(lat1, lon1, lat2, lon2):
 
     straight = haversine_km(lat1, lon1, lat2, lon2)
     return {"km": straight * 1.4, "duration_minutes": None, "source": "haversine_estimate"}
+
+
+def is_within_range(lat1, lon1, lat2, lon2, max_km=0.5):
+    """Straight-line proximity check -- used to confirm a driver's phone is actually
+    near the pickup/dropoff point before letting them advance a job's status.
+    Deliberately uses haversine (not the routed distance) since we just need "are you
+    standing here", not "how far by road". max_km should be generous enough to absorb
+    normal GPS drift/parking distance, not tight enough to block legitimate use."""
+    return haversine_km(lat1, lon1, lat2, lon2) <= max_km

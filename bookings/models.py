@@ -53,11 +53,51 @@ class Booking(models.Model):
     status = models.CharField(max_length=15, choices=STATUS, default='bidding')
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # --- Pickup/delivery safeguarding ---
+    # A driver can't fake "picked up" or "delivered" without the customer physically
+    # handing over these codes -- and a customer can't claim "never happened" when
+    # they're the only one who could have given the driver the code in the first
+    # place. Generated once at booking creation, never shown to the driver directly
+    # (see bookings.views.GetBookingOtpView, which only the customer can call).
+    pickup_otp = models.CharField(max_length=6, blank=True)
+    delivery_otp = models.CharField(max_length=6, blank=True)
+    picked_at = models.DateTimeField(null=True, blank=True)
+    on_the_way_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+
+    # Overlay flag rather than a status value, so 'delivered' (used for payment
+    # release elsewhere) stays meaningful even while a dispute is under review.
+    is_disputed = models.BooleanField(default=False)
+    dispute_reason = models.CharField(max_length=500, blank=True)
+    disputed_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ['-created_at']
 
     def __str__(self):
         return f"Booking #{self.id} ({self.status})"
+
+
+class StatusEvent(models.Model):
+    """Immutable audit trail: every status change on a booking, who made it, and
+    where they were standing at the time (when the client supplies GPS). This is
+    the record you'd point to if a customer and driver disagree about what
+    actually happened -- it can't be edited after the fact, only appended to."""
+    STATUS_CHOICES = Booking.STATUS + [('disputed', 'Disputed')]
+
+    booking = models.ForeignKey(Booking, on_delete=models.CASCADE, related_name='status_events')
+    status = models.CharField(max_length=15, choices=STATUS_CHOICES)
+    changed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
+    lat = models.FloatField(null=True, blank=True)
+    lng = models.FloatField(null=True, blank=True)
+    note = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at']
+
+    def __str__(self):
+        return f"Booking #{self.booking_id} -> {self.status} @ {self.created_at:%Y-%m-%d %H:%M}"
 
 
 class BookingOccurrence(models.Model):
@@ -66,6 +106,8 @@ class BookingOccurrence(models.Model):
     STATUS = [
         ('scheduled', 'Scheduled'),
         ('assigned', 'Driver Assigned'),
+        ('picked', 'Picked Up'),
+        ('on_the_way', 'On The Way'),
         ('completed', 'Completed'),
         ('cancelled', 'Cancelled'),
     ]
@@ -77,11 +119,43 @@ class BookingOccurrence(models.Model):
     notes = models.CharField(max_length=255, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # Same safeguarding as Booking (see the comment there) -- each occurrence is a
+    # separate physical run, so it gets its own codes rather than sharing the parent
+    # booking's. Generated when a driver is assigned to this specific date.
+    pickup_otp = models.CharField(max_length=6, blank=True)
+    delivery_otp = models.CharField(max_length=6, blank=True)
+    picked_at = models.DateTimeField(null=True, blank=True)
+    on_the_way_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    is_disputed = models.BooleanField(default=False)
+    dispute_reason = models.CharField(max_length=500, blank=True)
+    disputed_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ['occurrence_date']
 
     def __str__(self):
         return f"Occurrence for Booking #{self.booking_id} on {self.occurrence_date:%Y-%m-%d}"
+
+
+class OccurrenceStatusEvent(models.Model):
+    """Same audit-trail idea as StatusEvent, scoped to a single occurrence run."""
+    STATUS_CHOICES = BookingOccurrence.STATUS + [('disputed', 'Disputed')]
+
+    occurrence = models.ForeignKey(BookingOccurrence, on_delete=models.CASCADE, related_name='status_events')
+    status = models.CharField(max_length=15, choices=STATUS_CHOICES)
+    changed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
+    lat = models.FloatField(null=True, blank=True)
+    lng = models.FloatField(null=True, blank=True)
+    note = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at']
+
+    def __str__(self):
+        return f"Occurrence #{self.occurrence_id} -> {self.status} @ {self.created_at:%Y-%m-%d %H:%M}"
 
 
 class BookingItem(models.Model):

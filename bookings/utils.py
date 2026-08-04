@@ -8,6 +8,7 @@ or assigning them to a scheduled org occurrence), we check for time-window overl
 every other active job that driver is already on, across BOTH tables.
 """
 from datetime import timedelta
+import random
 
 # Statuses where the driver is genuinely tied up (not yet delivered/cancelled).
 ACTIVE_BOOKING_STATUSES = ['accepted', 'picked', 'on_the_way']
@@ -65,3 +66,8 @@ def get_driver_conflicts(driver, start_time, end_time, exclude_booking_id=None, 
 
 def get_job_window(move_date, estimated_duration_minutes):
     return move_date, move_date + timedelta(minutes=estimated_duration_minutes or 30)
+
+
+def generate_otp():
+    """4-digit code the customer reads out to the driver in person at pickup/delivery."""
+    return f"{random.randint(0, 9999):04d}"

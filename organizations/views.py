@@ -5,11 +5,11 @@ from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from core.maps_service import get_distance_km
+from core.maps_service import get_distance_km, is_within_range
 from core.pricing import calculate_system_price, estimate_duration_minutes
-from bookings.models import Booking, BookingOccurrence
+from bookings.models import Booking, BookingOccurrence, OccurrenceStatusEvent
 from bookings.serializers import BookingSerializer, BookingOccurrenceSerializer
-from bookings.utils import get_driver_conflicts, get_job_window
+from bookings.utils import get_driver_conflicts, get_job_window, generate_otp
 from users.models import User
 from .models import Organization, OrganizationDriver, OrganizationBid
 from .serializers import OrganizationSerializer, OrganizationDriverSerializer, OrganizationBidSerializer
@@ -378,5 +378,142 @@ class OccurrenceAssignDriverView(APIView):
 
         occurrence.assigned_driver = driver
         occurrence.status = 'assigned'
-        occurrence.save(update_fields=['assigned_driver', 'status'])
+        # Fresh codes every time someone's (re)assigned -- if a driver gets swapped
+        # out, the old driver's codes shouldn't still work for whoever replaces them.
+        occurrence.pickup_otp = generate_otp()
+        occurrence.delivery_otp = generate_otp()
+        occurrence.save(update_fields=['assigned_driver', 'status', 'pickup_otp', 'delivery_otp'])
         return Response(BookingOccurrenceSerializer(occurrence).data)
+
+
+class GetOccurrenceOtpView(APIView):
+    """Org owner only -- same reasoning as GetBookingOtpView. The assigned driver
+    has to get these read out to them in person by whoever's actually receiving
+    the goods on that run."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, occurrence_id):
+        occurrence = get_object_or_404(BookingOccurrence, id=occurrence_id)
+        org = occurrence.booking.organization
+        if not org or org.owner_id != request.user.id:
+            return Response({"error": "Only the organization's owner can view this run's codes."}, status=403)
+        return Response({"pickup_otp": occurrence.pickup_otp, "delivery_otp": occurrence.delivery_otp})
+
+
+class ConfirmOccurrencePickupView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, occurrence_id):
+        occurrence = get_object_or_404(BookingOccurrence, id=occurrence_id)
+        if request.user.role != 'driver' or occurrence.assigned_driver_id != request.user.id:
+            return Response({"error": "You're not the assigned driver for this run."}, status=403)
+        if occurrence.status != 'assigned':
+            return Response({"error": f"Can't confirm pickup from status '{occurrence.status}'."}, status=400)
+
+        otp = str(request.data.get('otp', '')).strip()
+        lat, lng = request.data.get('lat'), request.data.get('lng')
+        if not otp:
+            return Response({"error": "otp is required."}, status=400)
+        if otp != occurrence.pickup_otp:
+            return Response({"error": "Incorrect pickup code."}, status=400)
+
+        booking = occurrence.booking
+        if lat is not None and lng is not None:
+            if not is_within_range(float(lat), float(lng), booking.pickup_lat, booking.pickup_lng, max_km=0.5):
+                return Response({"error": "You need to be at the pickup location to confirm this."}, status=400)
+
+        from django.utils import timezone
+        occurrence.status = 'picked'
+        occurrence.picked_at = timezone.now()
+        occurrence.save(update_fields=['status', 'picked_at'])
+        OccurrenceStatusEvent.objects.create(occurrence=occurrence, status='picked',
+                                              changed_by=request.user, lat=lat, lng=lng)
+        return Response({"message": "Pickup confirmed.", "status": occurrence.status})
+
+
+class MarkOccurrenceOnTheWayView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, occurrence_id):
+        occurrence = get_object_or_404(BookingOccurrence, id=occurrence_id)
+        if request.user.role != 'driver' or occurrence.assigned_driver_id != request.user.id:
+            return Response({"error": "You're not the assigned driver for this run."}, status=403)
+        if occurrence.status != 'picked':
+            return Response({"error": f"Can't mark on-the-way from status '{occurrence.status}'."}, status=400)
+
+        from django.utils import timezone
+        occurrence.status = 'on_the_way'
+        occurrence.on_the_way_at = timezone.now()
+        occurrence.save(update_fields=['status', 'on_the_way_at'])
+        OccurrenceStatusEvent.objects.create(occurrence=occurrence, status='on_the_way', changed_by=request.user)
+        return Response({"message": "Marked on the way.", "status": occurrence.status})
+
+
+class ConfirmOccurrenceDeliveryView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, occurrence_id):
+        occurrence = get_object_or_404(BookingOccurrence, id=occurrence_id)
+        if request.user.role != 'driver' or occurrence.assigned_driver_id != request.user.id:
+            return Response({"error": "You're not the assigned driver for this run."}, status=403)
+        if occurrence.status not in ('picked', 'on_the_way'):
+            return Response({"error": f"Can't confirm delivery from status '{occurrence.status}'."}, status=400)
+
+        otp = str(request.data.get('otp', '')).strip()
+        lat, lng = request.data.get('lat'), request.data.get('lng')
+        if not otp:
+            return Response({"error": "otp is required."}, status=400)
+        if otp != occurrence.delivery_otp:
+            return Response({"error": "Incorrect delivery code."}, status=400)
+
+        booking = occurrence.booking
+        if lat is not None and lng is not None:
+            if not is_within_range(float(lat), float(lng), booking.dropoff_lat, booking.dropoff_lng, max_km=1.0):
+                return Response({"error": "You need to be near the dropoff location to confirm this."}, status=400)
+
+        from django.utils import timezone
+        occurrence.status = 'completed'
+        occurrence.completed_at = timezone.now()
+        occurrence.save(update_fields=['status', 'completed_at'])
+        OccurrenceStatusEvent.objects.create(occurrence=occurrence, status='completed',
+                                              changed_by=request.user, lat=lat, lng=lng)
+        return Response({"message": "Delivery confirmed.", "status": occurrence.status})
+
+
+class RaiseOccurrenceDisputeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, occurrence_id):
+        occurrence = get_object_or_404(BookingOccurrence, id=occurrence_id)
+        org = occurrence.booking.organization
+        is_owner = org and org.owner_id == request.user.id
+        is_driver = occurrence.assigned_driver_id == request.user.id
+        if not (is_owner or is_driver):
+            return Response({"error": "Only the organization's owner or the assigned driver can raise a dispute."},
+                             status=403)
+        reason = request.data.get('reason', '').strip()
+        if not reason:
+            return Response({"error": "reason is required."}, status=400)
+
+        from django.utils import timezone
+        occurrence.is_disputed = True
+        occurrence.dispute_reason = reason
+        occurrence.disputed_at = timezone.now()
+        occurrence.save(update_fields=['is_disputed', 'dispute_reason', 'disputed_at'])
+        OccurrenceStatusEvent.objects.create(occurrence=occurrence, status='disputed',
+                                              changed_by=request.user, note=reason)
+        return Response({"message": "Dispute raised -- this run is now flagged for review.", "is_disputed": True})
+
+
+class MyAssignedOccurrencesView(APIView):
+    """Driver's own org runs currently in progress (assigned through on_the_way) --
+    the org half of the driver's 'My Runs' tab."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if request.user.role != 'driver':
+            return Response({"error": "Only drivers have assigned runs."}, status=403)
+        occurrences = BookingOccurrence.objects.filter(
+            assigned_driver=request.user, status__in=['assigned', 'picked', 'on_the_way']
+        ).order_by('occurrence_date')
+        return Response(BookingOccurrenceSerializer(occurrences, many=True).data)

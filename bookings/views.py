@@ -3,11 +3,11 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from core.maps_service import get_distance_km
+from core.maps_service import get_distance_km, is_within_range
 from core.pricing import calculate_system_price, estimate_duration_minutes
-from .models import Booking, BookingItem, DriverBid, ChatMessage
+from .models import Booking, BookingItem, DriverBid, ChatMessage, StatusEvent
 from .serializers import BookingSerializer, DriverBidSerializer, ChatMessageSerializer
-from .utils import get_driver_conflicts, get_job_window
+from .utils import get_driver_conflicts, get_job_window, generate_otp
 
 
 class IsCustomer(permissions.BasePermission):
@@ -77,6 +77,8 @@ class CreateBookingWithPriceView(APIView):
             passenger_count=data.get('passenger_count', 0),
             status='bidding',
             move_date=move_date,
+            pickup_otp=generate_otp(),
+            delivery_otp=generate_otp(),
         )
         for item in items:
             if isinstance(item, dict):
@@ -127,6 +129,19 @@ class MyBookingsView(APIView):
 
     def get(self, request):
         bookings = Booking.objects.filter(customer=request.user, organization__isnull=True)
+        return Response(BookingSerializer(bookings, many=True).data)
+
+
+class MyActiveJobsAsDriverView(APIView):
+    """Driver's own marketplace jobs currently in progress (accepted through
+    on_the_way) -- powers the driver's 'My Runs' tab, the one place they can find
+    a job again after leaving its bid screen."""
+    permission_classes = [IsDriver]
+
+    def get(self, request):
+        bookings = Booking.objects.filter(
+            selected_driver=request.user, status__in=['accepted', 'picked', 'on_the_way']
+        ).order_by('move_date')
         return Response(BookingSerializer(bookings, many=True).data)
 
 
@@ -271,6 +286,9 @@ class ChatView(APIView):
 
 
 class UpdateStatusView(APIView):
+    """Deliberately restricted to 'cancelled' only now -- picked/on_the_way/delivered
+    all go through their own guarded endpoints below (OTP + GPS checks), so this can't
+    be used to bypass those safeguards."""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, booking_id):
@@ -278,9 +296,135 @@ class UpdateStatusView(APIView):
         if request.user.id not in (booking.customer_id, booking.selected_driver_id):
             return Response({"error": "Only the customer or assigned driver can update this booking."}, status=403)
         new_status = request.data.get('status')
-        valid_statuses = [s[0] for s in Booking.STATUS]
-        if new_status not in valid_statuses:
-            return Response({"error": f"status must be one of {valid_statuses}"}, status=400)
-        booking.status = new_status
+        if new_status != 'cancelled':
+            return Response({"error": "Only cancellation is allowed here -- pickup/delivery go through "
+                                       "their own confirmation endpoints."}, status=400)
+        if booking.status == 'delivered':
+            return Response({"error": "This job is already delivered and can't be cancelled."}, status=400)
+        booking.status = 'cancelled'
         booking.save(update_fields=['status'])
-        return Response({"message": f"Status updated to {booking.status}", "status": booking.status})
+        StatusEvent.objects.create(booking=booking, status='cancelled', changed_by=request.user)
+        return Response({"message": "Booking cancelled.", "status": booking.status})
+
+
+class GetBookingOtpView(APIView):
+    """Customer-only. The driver never gets this through the API -- it has to be
+    read out to them in person, which is the whole point of the safeguard."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, booking_id):
+        booking = get_object_or_404(Booking, id=booking_id)
+        if booking.customer_id != request.user.id:
+            return Response({"error": "Only the customer who made this booking can view its codes."}, status=403)
+        return Response({"pickup_otp": booking.pickup_otp, "delivery_otp": booking.delivery_otp})
+
+
+class ConfirmPickupView(APIView):
+    """Driver enters the code the customer read out to them at the pickup point.
+    Also requires the driver's phone to actually be near the pickup coordinates --
+    the code alone isn't enough if their GPS says they're nowhere close."""
+    permission_classes = [IsDriver]
+
+    def post(self, request, booking_id):
+        booking = get_object_or_404(Booking, id=booking_id)
+        if booking.selected_driver_id != request.user.id:
+            return Response({"error": "You're not the assigned driver for this booking."}, status=403)
+        if booking.status != 'accepted':
+            return Response({"error": f"Can't confirm pickup from status '{booking.status}'."}, status=400)
+
+        otp = str(request.data.get('otp', '')).strip()
+        lat, lng = request.data.get('lat'), request.data.get('lng')
+        if not otp:
+            return Response({"error": "otp is required."}, status=400)
+        if otp != booking.pickup_otp:
+            return Response({"error": "Incorrect pickup code."}, status=400)
+
+        if lat is not None and lng is not None:
+            if not is_within_range(float(lat), float(lng), booking.pickup_lat, booking.pickup_lng, max_km=0.5):
+                return Response({"error": "You need to be at the pickup location to confirm this."}, status=400)
+
+        from django.utils import timezone
+        booking.status = 'picked'
+        booking.picked_at = timezone.now()
+        booking.save(update_fields=['status', 'picked_at'])
+        StatusEvent.objects.create(booking=booking, status='picked', changed_by=request.user, lat=lat, lng=lng)
+        return Response({"message": "Pickup confirmed.", "status": booking.status})
+
+
+class MarkOnTheWayView(APIView):
+    """No code needed here -- just the driver saying they've left the pickup point.
+    The two codes bracket the trip (pickup and delivery); this middle step is
+    informational, not a safeguard boundary."""
+    permission_classes = [IsDriver]
+
+    def post(self, request, booking_id):
+        booking = get_object_or_404(Booking, id=booking_id)
+        if booking.selected_driver_id != request.user.id:
+            return Response({"error": "You're not the assigned driver for this booking."}, status=403)
+        if booking.status != 'picked':
+            return Response({"error": f"Can't mark on-the-way from status '{booking.status}'."}, status=400)
+
+        from django.utils import timezone
+        booking.status = 'on_the_way'
+        booking.on_the_way_at = timezone.now()
+        booking.save(update_fields=['status', 'on_the_way_at'])
+        StatusEvent.objects.create(booking=booking, status='on_the_way', changed_by=request.user)
+        return Response({"message": "Marked on the way.", "status": booking.status})
+
+
+class ConfirmDeliveryView(APIView):
+    """Same idea as pickup, at the dropoff end -- this is the one that matters most
+    for payment release, so both the code and the GPS check apply here too."""
+    permission_classes = [IsDriver]
+
+    def post(self, request, booking_id):
+        booking = get_object_or_404(Booking, id=booking_id)
+        if booking.selected_driver_id != request.user.id:
+            return Response({"error": "You're not the assigned driver for this booking."}, status=403)
+        if booking.status not in ('picked', 'on_the_way'):
+            return Response({"error": f"Can't confirm delivery from status '{booking.status}'."}, status=400)
+
+        otp = str(request.data.get('otp', '')).strip()
+        lat, lng = request.data.get('lat'), request.data.get('lng')
+        if not otp:
+            return Response({"error": "otp is required."}, status=400)
+        if otp != booking.delivery_otp:
+            return Response({"error": "Incorrect delivery code."}, status=400)
+
+        if lat is not None and lng is not None:
+            if not is_within_range(float(lat), float(lng), booking.dropoff_lat, booking.dropoff_lng, max_km=1.0):
+                return Response({"error": "You need to be near the dropoff location to confirm this."}, status=400)
+
+        from django.utils import timezone
+        booking.status = 'delivered'
+        booking.delivered_at = timezone.now()
+        booking.save(update_fields=['status', 'delivered_at'])
+        StatusEvent.objects.create(booking=booking, status='delivered', changed_by=request.user, lat=lat, lng=lng)
+        return Response({"message": "Delivery confirmed.", "status": booking.status})
+
+
+class RaiseDisputeView(APIView):
+    """Either party can flag a job as disputed -- e.g. a customer says the code was
+    entered but goods never actually arrived, or a driver says the customer is
+    refusing to hand over the delivery code despite receiving everything. This
+    doesn't change payment status by itself; it's a flag for manual review (Django
+    admin, for now -- see StatusEvent for the full timestamped/geotagged history
+    to review when arbitrating)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, booking_id):
+        booking = get_object_or_404(Booking, id=booking_id)
+        if request.user.id not in (booking.customer_id, booking.selected_driver_id):
+            return Response({"error": "Only the customer or assigned driver can raise a dispute."}, status=403)
+        reason = request.data.get('reason', '').strip()
+        if not reason:
+            return Response({"error": "reason is required."}, status=400)
+
+        from django.utils import timezone
+        booking.is_disputed = True
+        booking.dispute_reason = reason
+        booking.disputed_at = timezone.now()
+        booking.save(update_fields=['is_disputed', 'dispute_reason', 'disputed_at'])
+        StatusEvent.objects.create(booking=booking, status='disputed', changed_by=request.user, note=reason)
+        return Response({"message": "Dispute raised -- this booking is now flagged for review.",
+                          "is_disputed": True})
