@@ -101,15 +101,49 @@ class CreateBookingWithPriceView(APIView):
 
 class AvailableJobsView(APIView):
     """Open marketplace jobs available for any driver to bid on (organization jobs
-    are assigned directly via the organizations app instead)."""
+    are assigned directly via the organizations app instead). Each job includes
+    the requesting driver's own bid on it, if any -- so the client can separate
+    "not yet bid" from "already bid" without extra requests."""
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         jobs = Booking.objects.filter(status='bidding', organization__isnull=True).order_by('-id')[:50]
-        return Response(BookingSerializer(jobs, many=True).data)
+        results = []
+        for job in jobs:
+            my_bid = None
+            if request.user.role == 'driver':
+                my_bid = DriverBid.objects.filter(booking=job, driver=request.user).first()
+            results.append({
+                "booking": BookingSerializer(job).data,
+                "my_bid": DriverBidSerializer(my_bid).data if my_bid else None,
+            })
+        return Response(results)
+
+
+class MyBookingsView(APIView):
+    """The customer's own posted marketplace jobs (org schedules are managed via
+    the organizations endpoints instead, not shown here)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        bookings = Booking.objects.filter(customer=request.user, organization__isnull=True)
+        return Response(BookingSerializer(bookings, many=True).data)
+
+
+class BookingDetailView(APIView):
+    """Single booking, for the customer who owns it or the driver assigned to it."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, booking_id):
+        booking = get_object_or_404(Booking, id=booking_id)
+        if request.user.id not in (booking.customer_id, booking.selected_driver_id):
+            return Response({"error": "Not authorized to view this booking."}, status=403)
+        return Response(BookingSerializer(booking).data)
 
 
 class PlaceBidView(APIView):
+    """Creates a driver's FIRST bid on a booking. If they already have one,
+    points them at the edit endpoint instead of silently duplicating it."""
     permission_classes = [IsDriver]
 
     def post(self, request, booking_id):
@@ -119,6 +153,14 @@ class PlaceBidView(APIView):
         bid_amount = request.data.get('bid_amount')
         if not bid_amount:
             return Response({"error": "bid_amount is required."}, status=400)
+
+        existing = DriverBid.objects.filter(booking=booking, driver=request.user).first()
+        if existing:
+            return Response({
+                "error": "You've already bid on this job -- edit your existing bid instead.",
+                "bid_id": existing.id,
+            }, status=400)
+
         bid = DriverBid.objects.create(
             booking=booking,
             driver=request.user,
@@ -126,6 +168,38 @@ class PlaceBidView(APIView):
             message=request.data.get('message', ''),
         )
         return Response(DriverBidSerializer(bid).data, status=201)
+
+
+class MyBidView(APIView):
+    """Driver's own bid on a specific booking -- powers the 'my bid' page where
+    they can see accepted/rejected status and edit the price while still pending."""
+    permission_classes = [IsDriver]
+
+    def get(self, request, booking_id):
+        bid = get_object_or_404(DriverBid, booking_id=booking_id, driver=request.user)
+        return Response(DriverBidSerializer(bid).data)
+
+
+class EditBidView(APIView):
+    """Edit the price/message on your own bid. Only while the booking is still
+    open for bidding -- once a driver's been accepted (or someone else has),
+    the numbers are locked in."""
+    permission_classes = [IsDriver]
+
+    def patch(self, request, booking_id, bid_id):
+        bid = get_object_or_404(DriverBid, id=bid_id, booking_id=booking_id)
+        if bid.driver_id != request.user.id:
+            return Response({"error": "This isn't your bid."}, status=403)
+        if bid.booking.status != 'bidding':
+            return Response({"error": "Bidding has closed on this job -- the price can't be changed anymore."},
+                             status=400)
+        bid_amount = request.data.get('bid_amount')
+        if bid_amount:
+            bid.bid_amount = bid_amount
+        if 'message' in request.data:
+            bid.message = request.data.get('message', '')
+        bid.save(update_fields=['bid_amount', 'message'])
+        return Response(DriverBidSerializer(bid).data)
 
 
 class ListBidsView(APIView):
@@ -139,7 +213,8 @@ class ListBidsView(APIView):
 class AcceptBidView(APIView):
     """Only the booking's customer can accept a bid. This is where double-booking
     is actually enforced: we compute the job's occupied time window and check it
-    against every other active job the chosen driver already has."""
+    against every other active job the chosen driver already has. Accepting one
+    bid marks every other bid on this booking as rejected."""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, booking_id, bid_id=None):
@@ -164,6 +239,11 @@ class AcceptBidView(APIView):
         booking.final_price = bid.bid_amount
         booking.status = 'accepted'
         booking.save(update_fields=['selected_driver', 'final_price', 'status'])
+
+        bid.status = 'accepted'
+        bid.save(update_fields=['status'])
+        DriverBid.objects.filter(booking=booking).exclude(id=bid.id).update(status='rejected')
+
         return Response({
             "message": f"Accepted {bid.driver.username}",
             "driver": bid.driver.username,
